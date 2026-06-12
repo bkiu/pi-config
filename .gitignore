@@ -1,0 +1,8 @@
+# Generated session data
+sessions/
+
+# Binary tools
+bin/
+
+# Auth tokens (machine-specific)
+auth.json
