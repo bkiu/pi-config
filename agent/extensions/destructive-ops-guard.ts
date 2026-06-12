@@ -52,13 +52,55 @@ const PROTECTED_PATHS: string[] = [
   "Dockerfile",
 ];
 
-// No allowlist — all destructive commands require confirmation.
+/** Commands that always bypass confirmation (allowlist). */
+const ALLOWLISTED_COMMANDS: string[] = [
+  "rm -rf node_modules",
+  "rm -rf .next",
+  "rm -rf dist",
+  "rm -rf build",
+  "rm -rf __pycache__",
+  "rm -rf .pytest_cache",
+  "rm -rf .tox",
+  "rm -rf .mypy_cache",
+  "rm -rf .eslintcache",
+  "rm -rf .turbo",
+  "rm -rf .parcel-cache",
+  "rm -rf coverage",
+  "rm -rf .nyc_output",
+  "rm -rf tmp",
+  "rm -rf temp",
+  "rm -rf .cache",
+  "rm -rf .gradle",
+  "rm -rf .idea",
+  "rm -rf .vscode",
+  "rm -rf .DS_Store",
+  "rm -rf *.log",
+  "rm -rf *.pid",
+  "rm -rf *.lock",
+  "rm -rf package-lock.json",
+  "rm -rf yarn.lock",
+  "rm -rf pnpm-lock.yaml",
+  "rm -rf Cargo.lock",
+  "rm -rf Gemfile.lock",
+  "rm -rf Pipfile.lock",
+  "rm -rf composer.lock",
+  "rm -rf go.sum",
+  "rm -rf Podfile.lock",
+  "rm -rf Cartfile.resolved",
+  "rm -rf .terraform",
+  "rm -rf .terraform.lock.hcl",
+];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Check if a bash command matches any dangerous pattern. */
 function isDangerousCommand(command: string): boolean {
   return DANGEROUS_PATTERNS.some((p) => p.test(command));
+}
+
+/** Check if a command is allowlisted. */
+function isAllowlisted(command: string): boolean {
+  return ALLOWLISTED_COMMANDS.some((allowed) => command.trim() === allowed);
 }
 
 /** Check if a file path is protected. */
@@ -105,6 +147,9 @@ export default function (pi: ExtensionAPI) {
 
     const command = event.input.command as string;
     if (!command) return undefined;
+
+    // Allowlist: skip confirmation entirely
+    if (isAllowlisted(command)) return undefined;
 
     // Dangerous pattern: ask for confirmation
     if (isDangerousCommand(command)) {
