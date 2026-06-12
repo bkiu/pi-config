@@ -26,7 +26,7 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\bdd\b/i,                                      // dd (disk destroyer)
   /\bmkfs\b/i,                                    // mkfs (format disk)
   /\btruncate\s+-s\s+0\b/i,                      // truncate file to zero
-  /\b>+\s*\/dev\/\w/i,                            // redirect to /dev/*
+  /(^|\s|;|\||\(|\{)>+\s*\/dev\/\w/i,              // redirect to /dev/* (not 2>/dev/null)
   /\bshred\b/i,                                   // shred (secure delete)
   /\bwipe\b/i,                                    // wipe
   /\bfstrim\b/i,                                  // fstrim
@@ -126,7 +126,7 @@ function getDangerReason(command: string): string {
   if (/\bmkfs\b/i.test(command)) return "Formatting a disk partition";
   if (/\btruncate\s+-s\s+0\b/i.test(command))
     return "Truncating file to zero bytes — data loss";
-  if (/\b>+\s*\/dev\/\w/i.test(command))
+  if (/(^|\s|;|\||\(|\{)>+\s*\/dev\/\w/i.test(command))
     return "Writing directly to a device file — can corrupt the system";
   if (/\bshred\b/i.test(command)) return "Securely overwriting file contents";
   if (/\bwipe\b/i.test(command)) return "Wiping file contents";
