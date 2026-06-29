@@ -19,7 +19,7 @@
       "apiKey": "no-key-needed",
       "models": [
         {
-          "id": "qwen3.6-27b",
+          "id": "qwen3.6-27b-autoround",
           "name": "qwen3.6-27b",
           "contextWindow": 262144,
           "maxTokens": 32768
