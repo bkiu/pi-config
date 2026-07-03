@@ -1,5 +1,6 @@
 {
-  "lastChangelogVersion": "0.79.1",
+  "lastChangelogVersion": "0.80.3",
   "defaultProvider": "leftoverburrito",
-  "defaultModel": "qwen3.6-35b-a3b"
+  "defaultModel": "qwen3.6-27b",
+  "theme": "dark"
 }
