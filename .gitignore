@@ -6,3 +6,5 @@ bin/
 
 # Auth tokens (machine-specific)
 auth.json
+
+agent/settings.json

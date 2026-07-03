@@ -216,6 +216,14 @@ function renderFreeResult(result: any, _options: any, theme: any) {
 /* ── extension ───────────────────────────────────────────────────────────── */
 
 export default function qa(pi: ExtensionAPI) {
+	/* In headless modes (-p/json) these tools can only return errors, so
+	   deactivate them to keep them out of the model's tool list. */
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.mode === "tui") return;
+		const mine = ["ask", "ask_multi", "ask_free"];
+		pi.setActiveTools(pi.getActiveTools().filter((t) => !mine.includes(t)));
+	});
+
 	/* ── ask ─────────────────────────────────────────────────────────────── */
 	pi.registerTool({
 		name: "ask",

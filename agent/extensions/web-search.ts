@@ -65,6 +65,10 @@ function formatNewsResults(results: BraveNewsResult[]): string {
 }
 
 export default function (pi: ExtensionAPI) {
+  // Without an API key the tools can only ever return errors; registering them
+  // just pollutes the tool list and tempts the model into dead-end calls.
+  if (!BRAVE_API_KEY) return;
+
   // Web search tool
   pi.registerTool({
     name: "web_search",
