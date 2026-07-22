@@ -85,7 +85,7 @@ echo "Committed: $COMMIT_MSG"
 # Push
 echo ""
 echo "=== PUSHING BRANCH ==="
-git -C "$REPO_ROOT" push -u "${REMOTE}/${BRANCH}" --force-if-needed
+git -C "$REPO_ROOT" push -u "${REMOTE}/${BRANCH}" --force-with-lease
 echo "Pushed to ${REMOTE}/${BRANCH}"
 
 # --- Determine base branch ---
