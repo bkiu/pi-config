@@ -109,39 +109,16 @@ BODY_TMP=$(mktemp)
 
     CHANGED_FILES=$(git -C "$REPO_ROOT" diff HEAD~1 --name-only)
     FILE_COUNT=$(echo "$CHANGED_FILES" | grep -c . || true)
-    echo "**Files changed:** $FILE_COUNT"
+    TOTAL_ADDS=$(git -C "$REPO_ROOT" diff HEAD~1 --shortstat | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo "0")
+    TOTAL_DELS=$(git -C "$REPO_ROOT" diff HEAD~1 --shortstat | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo "0")
+    echo "**Files changed:** $FILE_COUNT (+$TOTAL_ADDS/-$TOTAL_DELS)"
     echo ""
 
+    echo "### Files"
+    echo ""
     while IFS= read -r f; do
         [[ -z "$f" ]] && continue
-
-        # Determine change type
-        if git -C "$REPO_ROOT" diff HEAD~1 HEAD --diff-filter=A -- "$f" &>/dev/null; then
-            CTYPE="Added"
-        elif git -C "$REPO_ROOT" diff HEAD~1 HEAD --diff-filter=D -- "$f" &>/dev/null; then
-            CTYPE="Deleted"
-        elif git -C "$REPO_ROOT" diff HEAD~1 HEAD --diff-filter=R -- "$f" &>/dev/null; then
-            CTYPE="Renamed"
-        else
-            CTYPE="Modified"
-        fi
-
-        # Get file-level diff
-        FILE_DIFF=$(git -C "$REPO_ROOT" diff HEAD~1 HEAD -- "$f" 2>/dev/null || true)
-        ADDS=$(echo "$FILE_DIFF" | grep -c '^\+' 2>/dev/null || echo "0")
-        DELS=$(echo "$FILE_DIFF" | grep -c '^\-' 2>/dev/null || echo "0")
-
-        echo "### $CTYPE: \`$f\` (+$ADDS/-$DELS)"
-        echo ""
-
-        # Diff preview (first 80 lines)
-        DIFF_PREVIEW=$(echo "$FILE_DIFF" | head -80)
-        if [[ -n "$DIFF_PREVIEW" ]]; then
-            echo '```diff'
-            echo "$DIFF_PREVIEW"
-            echo '```'
-        fi
-        echo ""
+        echo "- \`$f\`"
     done <<< "$CHANGED_FILES"
 } > "$BODY_TMP"
 
