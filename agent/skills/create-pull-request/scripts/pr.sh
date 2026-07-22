@@ -23,7 +23,6 @@ if ! gh auth status &>/dev/null 2>&1; then
 fi
 
 # --- Parse arguments ---
-BRANCH=""
 BASE_BRANCH=""
 PR_TITLE=""
 
@@ -32,40 +31,31 @@ while [[ $# -gt 0 ]]; do
         --base)  BASE_BRANCH="$2"; shift 2 ;;
         --title) PR_TITLE="$2"; shift 2 ;;
         --*)     echo "Unknown option: $1" >&2; exit 1 ;;
-        *)       BRANCH="$1"; shift ;;
+        *)       shift ;;
     esac
 done
 
-# --- Phase 1: No branch name — show diagnostics ---
-if [[ -z "$BRANCH" ]]; then
-    echo "=== STAGED CHANGES ==="
-    STAGED=$(git -C "$REPO_ROOT" diff --cached --name-only 2>/dev/null || true)
-    if [[ -z "$STAGED" ]]; then
-        echo "No staged changes found."
-        UNSTAGED=$(git -C "$REPO_ROOT" diff --name-only 2>/dev/null || true)
-        if [[ -n "$UNSTAGED" ]]; then
-            echo ""
-            echo "=== UNSTAGED CHANGES ==="
-            echo "$UNSTAGED"
-            echo ""
-            echo "Run 'git add <files>' to stage changes before creating a PR."
-        fi
-        exit 0
+# --- Check for staged changes ---
+STAGED=$(git -C "$REPO_ROOT" diff --cached --name-only 2>/dev/null || true)
+if [[ -z "$STAGED" ]]; then
+    echo "No staged changes found."
+    UNSTAGED=$(git -C "$REPO_ROOT" diff --name-only 2>/dev/null || true)
+    if [[ -n "$UNSTAGED" ]]; then
+        echo ""
+        echo "=== UNSTAGED CHANGES ==="
+        echo "$UNSTAGED"
+        echo ""
+        echo "Run 'git add <files>' to stage changes before creating a PR."
     fi
-    echo "$STAGED"
-    echo ""
-    echo "=== DIFF ==="
-    git -C "$REPO_ROOT" diff --cached
-    echo ""
-    echo "=== REMOTE ==="
-    git -C "$REPO_ROOT" remote -v
-    echo ""
-    echo "=== BRANCH ==="
-    git -C "$REPO_ROOT" branch --show-current
     exit 0
 fi
 
-# --- Phase 2: Create branch, commit, push, open PR ---
+# --- Auto-generate branch name ---
+SLUG=$(echo "$STAGED" | head -3 | sed -E 's|/|-|g; s|\.[^.]+$||' | tr '\n' '-' | sed -E 's|[^a-z0-9-]|-|g; s|-+|-|g; s|^-||; s|-$||' | tr '[:upper:]' '[:lower:]' | cut -c1-40 | sed -E 's|-$||')
+BRANCH="fix/${SLUG}"
+echo "Auto-generated branch name: $BRANCH"
+
+# --- Create branch, commit, push, open PR ---
 
 echo "=== CREATING BRANCH: $BRANCH ==="
 

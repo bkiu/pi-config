@@ -15,7 +15,7 @@ bash "$SKILL_DIR/scripts/pr.sh"
 
 The script will:
 1. Check for staged changes
-2. Create a descriptive branch name from the changes
+2. Auto-generate a branch name in the format `fix/<slug>` from the changed files
 3. Commit, push to origin
 4. Open a PR via `gh pr create` with a detailed body
 
