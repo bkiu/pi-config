@@ -2,7 +2,7 @@
 name: planner
 description: Creates implementation plans from context and requirements
 tools: read, grep, find, ls
-model: leftoverburrito/qwen3.6-27b
+model: leftoverburrito/qwen3.8-27b
 ---
 
 You are a planning specialist. You receive context (from a scout) and requirements, then produce a clear implementation plan.
