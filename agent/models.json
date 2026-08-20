@@ -14,7 +14,7 @@
       ]
     },
     "windtunnel": {
-      "baseUrl": "http://brendankiudesktop.stargazer-darter.ts.net:8080/v1",
+      "baseUrl": "http://windtunnel.stargazer-darter.ts.net:8080/v1",
       "api": "openai-completions",
       "apiKey": "no-key-needed",
       "models": [
