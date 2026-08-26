@@ -1,5 +1,5 @@
 {
   "lastChangelogVersion": "0.80.2",
   "defaultProvider": "windtunnel",
-  "defaultModel": "qwen3.6-27b-autoround"
+  "defaultModel": "qwen3.8-27b"
 }
