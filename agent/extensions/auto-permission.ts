@@ -34,6 +34,8 @@
 import { complete } from "@earendil-works/pi-ai/compat";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -516,14 +518,156 @@ function extractText(content: unknown): string {
 export default function (pi: ExtensionAPI): void {
 	let mode: Mode = "auto";
 	const sessionGrants = new Set<string>();
+	let footerDispose: (() => void) | undefined;
 
-	function updateStatus(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(
-			"auto-perm",
-			mode === "auto"
-				? ctx.ui.theme.fg("accent", "🤖 auto")
-				: ctx.ui.theme.fg("warning", "✋ ask"),
-		);
+	function formatTokens(count: number): string {
+		if (count < 1000) return count.toString();
+		if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+		if (count < 1000000) return `${Math.round(count / 1000)}k`;
+		if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+		return `${Math.round(count / 1000000)}M`;
+	}
+
+	function formatCwd(cwd: string): string {
+		const home = process.env.HOME || process.env.USERPROFILE;
+		if (!home) return cwd;
+		const resolvedCwd = resolve(cwd);
+		const resolvedHome = resolve(home);
+		const rel = relative(resolvedHome, resolvedCwd);
+		const inside = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+		if (!inside) return cwd;
+		return rel === "" ? "~" : `~${sep}${rel}`;
+	}
+
+	function sanitizeStatusText(text: string): string {
+		return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+	}
+
+	function updateFooter(ctx: ExtensionContext): void {
+		footerDispose?.();
+		footerDispose = undefined;
+
+		const modeLabel = mode === "auto" ? "auto" : "ask";
+
+		ctx.ui.setFooter((tui, theme, footerData) => {
+			const unsub = footerData.onBranchChange(() => tui.requestRender());
+
+			return {
+				dispose: unsub,
+				invalidate() {},
+				render(width: number): string[] {
+					// PWD line
+					let pwd = formatCwd(ctx.cwd);
+					const branch = footerData.getGitBranch();
+					if (branch) pwd = `${pwd} (${branch})`;
+					const sessionName = ctx.sessionManager.getSessionName();
+					if (sessionName) pwd = `${pwd} • ${sessionName}`;
+					const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+
+					// Stats
+					let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheWrite = 0, totalCost = 0;
+					let latestCacheHitRate: number | undefined;
+					for (const entry of ctx.sessionManager.getEntries()) {
+						const msg = (entry as any).message;
+						if (entry.type !== "message" || !msg || msg.role !== "assistant") continue;
+						const usage = msg.usage;
+						if (!usage) continue;
+						totalInput += usage.input;
+						totalOutput += usage.output;
+						totalCacheRead += usage.cacheRead;
+						totalCacheWrite += usage.cacheWrite;
+						totalCost += usage.cost?.total ?? 0;
+						const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+						latestCacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+					}
+
+					const statsParts: string[] = [];
+					if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
+					if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
+					if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
+					if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
+					if ((totalCacheRead > 0 || totalCacheWrite > 0) && latestCacheHitRate !== undefined) {
+						statsParts.push(`CH${latestCacheHitRate.toFixed(1)}%`);
+					}
+					if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
+
+					const model = ctx.model;
+					const contextUsage = ctx.getContextUsage?.();
+					const contextWindow = contextUsage?.contextWindow ?? model?.contextWindow ?? 0;
+					const contextPercentValue = contextUsage?.percent ?? 0;
+					const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
+					const autoIndicator = "";
+					const contextPercentDisplay = contextPercent === "?"
+						? `?/${formatTokens(contextWindow)}${autoIndicator}`
+						: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+					let contextPercentStr;
+					if (contextPercentValue > 90) {
+						contextPercentStr = theme.fg("error", contextPercentDisplay);
+					} else if (contextPercentValue > 70) {
+						contextPercentStr = theme.fg("warning", contextPercentDisplay);
+					} else {
+						contextPercentStr = contextPercentDisplay;
+					}
+					statsParts.push(contextPercentStr);
+
+					let statsLeft = statsParts.join(" ");
+					let statsLeftWidth = visibleWidth(statsLeft);
+					if (statsLeftWidth > width) {
+						statsLeft = truncateToWidth(statsLeft, width, "...");
+						statsLeftWidth = visibleWidth(statsLeft);
+					}
+
+					const modelName = model?.id || "no-model";
+					let rightSide = `${modelName} • ${theme.fg("muted", modeLabel)}`;
+					// Prepend provider if multiple providers available (with width check)
+					if (footerData.getAvailableProviderCount() > 1 && model) {
+						const withProvider = `(${model.provider}) ${rightSide}`;
+						if (statsLeftWidth + 2 + visibleWidth(withProvider) <= width) {
+							rightSide = withProvider;
+						}
+					}
+
+					const rightSideWidth = visibleWidth(rightSide);
+					const totalNeeded = statsLeftWidth + 2 + rightSideWidth;
+					let statsLine: string;
+					if (totalNeeded <= width) {
+						const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
+						statsLine = statsLeft + padding + rightSide;
+					} else {
+						const availableForRight = width - statsLeftWidth - 2;
+						if (availableForRight > 0) {
+							const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
+							const truncatedRightWidth = visibleWidth(truncatedRight);
+							const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedRightWidth));
+							statsLine = statsLeft + padding + truncatedRight;
+						} else {
+							statsLine = statsLeft;
+						}
+					}
+
+					const dimStatsLeft = theme.fg("dim", statsLeft);
+					const remainder = statsLine.slice(statsLeft.length);
+					const dimRemainder = theme.fg("dim", remainder);
+
+					// Other extension statuses
+					const lines: string[] = [pwdLine, dimStatsLeft + dimRemainder];
+					const extensionStatuses = footerData.getExtensionStatuses();
+					if (extensionStatuses.size > 0) {
+						const sortedStatuses = Array.from(extensionStatuses.entries())
+							.sort(([a], [b]) => a.localeCompare(b))
+							.map(([, text]) => sanitizeStatusText(text));
+						const statusLine = sortedStatuses.join(" ");
+						lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+					}
+					return lines;
+				},
+			};
+		});
+
+		footerDispose = () => {
+			ctx.ui.setFooter(undefined);
+			footerDispose = undefined;
+		};
 	}
 
 	function setMode(next: Mode, ctx: ExtensionContext): void {
@@ -534,7 +678,7 @@ export default function (pi: ExtensionAPI): void {
 		} else {
 			ctx.ui.notify("Auto permission mode disabled for this session — non read-only actions require confirmation.", "info");
 		}
-		updateStatus(ctx);
+		updateFooter(ctx);
 	}
 
 	// ── Commands / flags ───────────────────────────────────────────────────
@@ -596,7 +740,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		if (verdict.disposition === "clear") {
-			ctx.ui?.notify(`🤖 auto-approved: ${verdict.rationale}`, "info");
+			ctx.ui?.notify(`auto-approved: ${verdict.rationale}`, "info");
 			return undefined;
 		}
 
@@ -726,6 +870,6 @@ export default function (pi: ExtensionAPI): void {
 			if (entry?.data?.mode === "auto" || entry?.data?.mode === "ask") mode = entry.data.mode;
 		}
 
-		updateStatus(ctx);
+		updateFooter(ctx);
 	});
 }
