@@ -4,7 +4,7 @@
  * Port of the ffx auto permission mode (`core/permissions/auto_classifier.zig` +
  * `permission_gate.zig` + `session_permission_state.zig`) to the pi extension API.
  *
- * Two session-scoped modes (mirrors ffx's PermissionMode.ask / PermissionMode.auto):
+ * Three session-scoped modes (auto/ask mirror ffx's PermissionMode.auto / PermissionMode.ask):
  *
  *   auto (default) — like ffx:
  *     - Read-only / obviously-safe commands run directly (ffx `direct_read_only` path).
@@ -17,13 +17,20 @@
  *   ask — auto mode disabled for this session. Read-only actions still run
  *     directly; every other bash command and every external/protected file
  *     mutation is confirmed interactively.
+ *   yolo — no LLM review, no prompts. Every bash command and every file
+ *     mutation runs directly. The one hard floor: protected/credential paths
+ *     (.ssh/, .env, .aws/, …) still require a human confirmation, same as ask
+ *     mode (no LLM review — the human decides directly; "allow for rest of
+ *     session" grants still apply to that confirmation).
  *
  * Session controls (mode does not leak across sessions; state persists for the
  * life of the session file like ffx's session permission state):
- *   /auto           toggle auto <-> ask
- *   /auto on        enable auto mode
- *   /auto off       disable auto mode for this session
- *   --no-auto       start the session with auto mode disabled
+ *   /auto          toggle auto <-> ask
+ *   /auto on       enable auto mode
+ *   /auto off      disable auto mode for this session
+ *   /auto yolo     enable yolo mode (everything approved except protected paths)
+ *   --no-auto      start the session with auto mode disabled
+ *   --yolo         start the session in yolo mode
  *   "Allow for rest of session" answers create session-scoped grants
  *   (exact command string or exact path), like ffx's session grants.
  *
@@ -39,7 +46,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-type Mode = "auto" | "ask";
+type Mode = "auto" | "ask" | "yolo";
 
 /** Reviewer budget. ffx ships a 15s budget for a fast cloud reviewer; the
  *  reviewer here is the active (often local) model, so give it more room.
@@ -289,6 +296,7 @@ function bounded(value: string, cap: number): string {
 /** ffx validatedHostDisposition: the host grants only on a strict `clear`. */
 type Verdict =
 	| { disposition: "clear"; risk: string; rationale: string }
+	// (yolo mode never reaches the reviewer; see gate())
 	| { disposition: "caution"; risk?: string; rationale: string }
 	| { disposition: "unavailable"; rationale: string };
 
@@ -547,7 +555,7 @@ export default function (pi: ExtensionAPI): void {
 		footerDispose?.();
 		footerDispose = undefined;
 
-		const modeLabel = mode === "auto" ? "auto" : "ask";
+		const modeLabel = mode;
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
@@ -618,7 +626,9 @@ export default function (pi: ExtensionAPI): void {
 					}
 
 					const modelName = model?.id || "no-model";
-					let rightSide = `${modelName} • ${theme.fg("muted", modeLabel)}`;
+				const modeIndicator =
+					mode === "yolo" ? theme.fg("error", "yolo") : theme.fg("muted", modeLabel);
+				let rightSide = `${modelName} • ${modeIndicator}`;
 					// Prepend provider if multiple providers available (with width check)
 					if (footerData.getAvailableProviderCount() > 1 && model) {
 						const withProvider = `(${model.provider}) ${rightSide}`;
@@ -675,6 +685,8 @@ export default function (pi: ExtensionAPI): void {
 		pi.appendEntry("auto-perm", { mode });
 		if (next === "auto") {
 			ctx.ui.notify("Auto permission mode enabled — mutating actions are LLM-reviewed (clear = run, caution = ask).", "info");
+		} else if (next === "yolo") {
+			ctx.ui.notify("YOLO mode — everything runs without review or prompts, except protected/credential paths.", "warning");
 		} else {
 			ctx.ui.notify("Auto permission mode disabled for this session — non read-only actions require confirmation.", "info");
 		}
@@ -689,12 +701,19 @@ export default function (pi: ExtensionAPI): void {
 		default: false,
 	});
 
+	pi.registerFlag("yolo", {
+		description: "Start in yolo permission mode (approve everything except protected paths)",
+		type: "boolean",
+		default: false,
+	});
+
 	pi.registerCommand("auto", {
-		description: "Auto permission mode: /auto (toggle) | /auto on | /auto off",
+		description: "Permission mode: /auto (toggle) | /auto on | /auto off | /auto yolo",
 		handler: async (args, ctx) => {
 			const a = (args ?? "").trim().toLowerCase();
 			if (a === "on" || a === "auto" || a === "1") setMode("auto", ctx);
 			else if (a === "off" || a === "ask" || a === "0") setMode("ask", ctx);
+			else if (a === "yolo") setMode("yolo", ctx);
 			else setMode(mode === "auto" ? "ask" : "auto", ctx);
 		},
 	});
@@ -744,6 +763,20 @@ export default function (pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		if (mode === "yolo") {
+			// yolo floor: gate() is only reachable here for protected paths
+			// (bash is pre-approved in yolo mode, see tool_call). No LLM review —
+			// straight to a human confirmation.
+			const answer = await confirm(
+				ctx,
+				action.kind === "command" ? `cmd:${action.command}` : `path:${action.path}`,
+				reason,
+				detail,
+			);
+			if (answer === "once" || answer === "session") return undefined;
+			return { block: true, reason: `Blocked: ${reason}` };
+		}
+
 		const answer = await confirm(
 			ctx,
 			action.kind === "command" ? `cmd:${action.command}` : `path:${action.path}`,
@@ -764,6 +797,9 @@ export default function (pi: ExtensionAPI): void {
 		if (event.toolName === "bash") {
 			const command = event.input.command as string;
 			if (!command) return undefined;
+
+			// yolo: all bash runs directly (no review, no prompt).
+			if (mode === "yolo") return undefined;
 
 			// ffx direct_read_only: safe read-only commands need no review.
 			if (isSafeCommand(command)) return undefined;
@@ -796,7 +832,9 @@ export default function (pi: ExtensionAPI): void {
 			// ffx in-workspace target policy: mutations inside the workspace
 			// (non-protected) run directly; external/protected targets are gated.
 			const inWorkspace = abs === cwd || abs.startsWith(cwd + "/");
-			if (inWorkspace && !isProtectedPath(abs)) return undefined;
+			// ffx in-workspace target policy (yolo additionally approves
+			// external paths — only protected paths remain gated).
+			if (!isProtectedPath(abs) && (inWorkspace || mode === "yolo")) return undefined;
 
 			const input = event.input as {
 				content?: string;
@@ -861,13 +899,15 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		sessionGrants.clear();
 
-		if (pi.getFlag("no-auto") === true) {
+		if (pi.getFlag("yolo") === true) {
+			mode = "yolo";
+		} else if (pi.getFlag("no-auto") === true) {
 			mode = "ask";
 		} else {
 			const entry = (ctx.sessionManager.getEntries() as { type?: string; customType?: string; data?: { mode?: Mode } }[])
 				.filter((e) => e.type === "custom" && e.customType === "auto-perm")
 				.pop();
-			if (entry?.data?.mode === "auto" || entry?.data?.mode === "ask") mode = entry.data.mode;
+			if (entry?.data?.mode === "auto" || entry?.data?.mode === "ask" || entry?.data?.mode === "yolo") mode = entry.data.mode;
 		}
 
 		updateFooter(ctx);
