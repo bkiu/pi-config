@@ -37,13 +37,29 @@ import { join } from "node:path";
 
 // ── config / caps ──────────────────────────────────────────────────────────
 
-function fileConfig(): { url?: string; name?: string } {
+function fileConfig(): { url?: string; name?: string; tokenFile?: string } {
 	const dir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 	try {
 		const parsed = JSON.parse(readFileSync(join(dir, "remote-control.json"), "utf8"));
 		return parsed && typeof parsed === "object" ? parsed : {};
 	} catch {
 		return {}; // missing or malformed config file — stay inert
+	}
+}
+
+/** Connection token authenticating this machine to pi-server. Never stored in
+ *  pi-config (the repo is public): PI_REMOTE_TOKEN env, or the file named by
+ *  config "tokenFile", or ~/.config/pi-remote/token. */
+function connectionToken(): string | undefined {
+	const env = process.env.PI_REMOTE_TOKEN?.trim();
+	if (env) return env;
+	const file =
+		(typeof CONFIG.tokenFile === "string" && CONFIG.tokenFile.trim().replace(/^~(?=\/)/, homedir())) ||
+		join(homedir(), ".config", "pi-remote", "token");
+	try {
+		return readFileSync(file, "utf8").trim() || undefined;
+	} catch {
+		return undefined; // server may not require one (dev mode)
 	}
 }
 
@@ -339,7 +355,9 @@ export default function (pi: ExtensionAPI): void {
 	function connect(): void {
 		if (shuttingDown || !enabled || (ws && ws.readyState <= WebSocket.OPEN)) return;
 		try {
-			ws = new WebSocket(url!);
+			// token goes only on the wire — `url` stays clean for display/notify
+			const token = connectionToken();
+			ws = new WebSocket(token ? `${url}?token=${encodeURIComponent(token)}` : url!);
 		} catch {
 			scheduleReconnect();
 			return;
