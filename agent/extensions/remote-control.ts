@@ -230,6 +230,7 @@ export default function (pi: ExtensionAPI): void {
 	let ctx: ExtensionContext | undefined;
 	let ws: WebSocket | undefined;
 	let connected = false;
+	let enabled = true; // /rc on|off (session-scoped)
 	let shuttingDown = false;
 	let backoff = RECONNECT_MIN_MS;
 	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -262,14 +263,10 @@ export default function (pi: ExtensionAPI): void {
 		wsSend({ type: "event", event });
 	}
 
+	/** Broadcast connection state on the extension event bus; the custom footer
+	 *  in auto-permission.ts renders it inline as "rc" on the model line. */
 	function updateStatusIndicator(): void {
-		try {
-			if (ctx?.hasUI) {
-				ctx.ui.setStatus("remote", connected ? ctx.ui.theme.fg("success", "🛰 remote") : undefined);
-			}
-		} catch {
-			/* ui not available */
-		}
+		pi.events.emit("rc:status", { connected });
 	}
 
 	function register(): void {
@@ -298,7 +295,7 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	function connect(): void {
-		if (shuttingDown || (ws && ws.readyState <= WebSocket.OPEN)) return;
+		if (shuttingDown || !enabled || (ws && ws.readyState <= WebSocket.OPEN)) return;
 		try {
 			ws = new WebSocket(url!);
 		} catch {
@@ -330,7 +327,7 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	function scheduleReconnect(): void {
-		if (shuttingDown || reconnectTimer) return;
+		if (shuttingDown || !enabled || reconnectTimer) return;
 		reconnectTimer = setTimeout(() => {
 			reconnectTimer = undefined;
 			connect();
@@ -491,13 +488,48 @@ export default function (pi: ExtensionAPI): void {
 		wsSend({ type: "meta", meta: { model: eventCtx.model?.id } });
 	});
 
-	// ── /remote command ──────────────────────────────────────────────────────
+	// ── /rc command ──────────────────────────────────────────────────────────
 
-	pi.registerCommand("remote", {
-		description: "Show remote-control connection status",
-		handler: async (_args, cmdCtx) => {
-			const state = connected ? `connected to ${url}` : `disconnected (retrying ${url})`;
-			cmdCtx.ui.notify(`Remote control: ${state}`, connected ? "info" : "warning");
+	function setEnabled(next: boolean, cmdCtx: ExtensionContext): void {
+		if (enabled === next) return;
+		enabled = next;
+		if (enabled) {
+			backoff = RECONNECT_MIN_MS;
+			connect();
+			cmdCtx.ui.notify(`Remote control on — connecting to ${url}`, "info");
+		} else {
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer);
+				reconnectTimer = undefined;
+			}
+			try {
+				ws?.close();
+			} catch {
+				/* already closed */
+			}
+			ws = undefined;
+			connected = false;
+			updateStatusIndicator();
+			cmdCtx.ui.notify("Remote control off for this session", "info");
+		}
+	}
+
+	pi.registerCommand("rc", {
+		description: "Remote control: /rc (status) | /rc on | /rc off",
+		handler: async (args, cmdCtx) => {
+			const a = (args ?? "").trim().toLowerCase();
+			if (a === "on" || a === "1") {
+				setEnabled(true, cmdCtx);
+			} else if (a === "off" || a === "0") {
+				setEnabled(false, cmdCtx);
+			} else {
+				const state = !enabled
+					? "off (/rc on to enable)"
+					: connected
+						? `connected to ${url}`
+						: `disconnected (retrying ${url})`;
+				cmdCtx.ui.notify(`Remote control: ${state}`, connected || !enabled ? "info" : "warning");
+			}
 		},
 	});
 }

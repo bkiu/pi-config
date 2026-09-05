@@ -29,7 +29,7 @@ git clone git@github.com:bkiu/pi-config.git ~/.pi
 { "url": "wss://pi.stargazer-darter.ts.net" }
 ```
 
-`PI_REMOTE_URL` / `PI_REMOTE_NAME` env vars override the file; without any url the extension does nothing. `/remote` shows connection status in a session.
+`PI_REMOTE_URL` / `PI_REMOTE_NAME` env vars override the file; without any url the extension does nothing. It is on automatically; a green `rc` indicator appears on the footer model line while connected. `/rc` shows status, `/rc off` / `/rc on` toggle it for the session.
 
 ## What's excluded
 

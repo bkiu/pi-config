@@ -528,6 +528,15 @@ export default function (pi: ExtensionAPI): void {
 	const sessionGrants = new Set<string>();
 	let footerDispose: (() => void) | undefined;
 
+	// remote-control.ts broadcasts its connection state on the event bus so it
+	// can render inline on the model line instead of a separate status line.
+	let rcConnected = false;
+	let requestFooterRender: (() => void) | undefined;
+	pi.events.on("rc:status", (data) => {
+		rcConnected = !!(data as { connected?: boolean } | undefined)?.connected;
+		requestFooterRender?.();
+	});
+
 	function formatTokens(count: number): string {
 		if (count < 1000) return count.toString();
 		if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -559,9 +568,13 @@ export default function (pi: ExtensionAPI): void {
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
+			requestFooterRender = () => tui.requestRender();
 
 			return {
-				dispose: unsub,
+				dispose: () => {
+					requestFooterRender = undefined;
+					unsub();
+				},
 				invalidate() {},
 				render(width: number): string[] {
 					// PWD line
@@ -628,7 +641,8 @@ export default function (pi: ExtensionAPI): void {
 					const modelName = model?.id || "no-model";
 				const modeIndicator =
 					mode === "yolo" ? theme.fg("error", "yolo") : theme.fg("muted", modeLabel);
-				let rightSide = `${modelName} • ${modeIndicator}`;
+				const rcIndicator = rcConnected ? ` • ${theme.fg("success", "rc")}` : "";
+				let rightSide = `${modelName} • ${modeIndicator}${rcIndicator}`;
 					// Prepend provider if multiple providers available (with width check)
 					if (footerData.getAvailableProviderCount() > 1 && model) {
 						const withProvider = `(${model.provider}) ${rightSide}`;
