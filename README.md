@@ -31,6 +31,8 @@ git clone git@github.com:bkiu/pi-config.git ~/.pi
 
 `PI_REMOTE_URL` / `PI_REMOTE_NAME` env vars override the file; without any url the extension does nothing. It is on automatically; a green `rc` indicator appears on the footer model line while connected. `/rc` shows status, `/rc off` / `/rc on` toggle it for the session.
 
+Beyond mirroring the transcript and accepting remote input/abort, the extension also mirrors UI dialogs (`ctx.ui.select/confirm/input` — including auto-permission's permission prompts) to the web UI, where they can be answered remotely; the remote answer races the local dialog and the loser is dismissed. It publishes the session's usable model list so the web UI can switch the active model with `pi.setModel()`.
+
 ## What's excluded
 
 - `sessions/` — session history (generated per machine)

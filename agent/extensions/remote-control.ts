@@ -20,6 +20,12 @@
  *   tool calls with results, and working/idle status.
  * - Remote input is injected with pi.sendUserMessage() ("steer" while the
  *   agent is streaming); remote abort calls ctx.abort().
+ * - UI dialogs (ctx.ui.select/confirm/input — including permission prompts
+ *   from auto-permission.ts) are mirrored to the server as "prompt" events.
+ *   The remote answer races the local dialog; whichever side answers first
+ *   wins and the other is dismissed via the dialog AbortSignal.
+ * - The available model list is published in session meta; a remote
+ *   "set_model" switches the active model via pi.setModel().
  * - Fails soft: if the server is unreachable it retries with backoff and never
  *   affects the session.
  */
@@ -54,6 +60,8 @@ const MAX_TEXT = 32_000;
 const MAX_THINKING = 8_000;
 const MAX_TOOL_OUTPUT = 8_000;
 const MAX_ARG_STRING = 2_000;
+const MAX_PROMPT_TITLE = 4_000;
+const MAX_MODELS = 200;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
@@ -239,6 +247,19 @@ export default function (pi: ExtensionAPI): void {
 	let partialTimer: ReturnType<typeof setTimeout> | undefined;
 	const remoteSentTexts: string[] = [];
 
+	// ── dialog mirroring state ───────────────────────────────────────────────
+
+	type DialogKind = "select" | "confirm" | "input";
+	interface OpenPrompt {
+		event: RemoteEvent; // re-sent on reconnect so a fresh UI sees open prompts
+		kind: DialogKind;
+		options?: string[];
+		settle: (value: string | boolean | undefined) => void;
+	}
+	const openPrompts = new Map<string, OpenPrompt>();
+	let promptSeq = 0;
+	const UI_PATCHED = Symbol.for("pi-remote-control.uiPatched");
+
 	function sessionKey(): string {
 		let id = "unknown";
 		try {
@@ -269,6 +290,17 @@ export default function (pi: ExtensionAPI): void {
 		pi.events.emit("rc:status", { connected });
 	}
 
+	/** Session-usable models for the web UI's model picker. */
+	function modelsMeta(c: ExtensionContext): { provider: string; id: string; name?: string }[] {
+		try {
+			const scoped = c.scopedModels;
+			const models = scoped && scoped.length ? scoped.map((s) => s.model) : c.modelRegistry.getAvailable();
+			return models.slice(0, MAX_MODELS).map((m) => ({ provider: m.provider, id: m.id, name: m.name }));
+		} catch {
+			return [];
+		}
+	}
+
 	function register(): void {
 		if (!ctx) return;
 		wsSend({
@@ -286,11 +318,16 @@ export default function (pi: ExtensionAPI): void {
 				cwd: ctx.cwd,
 				name: pi.getSessionName(),
 				model: ctx.model?.id,
+				modelProvider: ctx.model?.provider,
+				models: modelsMeta(ctx),
 				startedAt: Date.now(),
 				pid: process.pid,
 			},
 		});
 		wsSend({ type: "backlog", events: buildBacklog(ctx) });
+		// backlog replaces the server-side buffer, so re-announce dialogs that
+		// are still waiting for an answer
+		for (const p of openPrompts.values()) sendEvent(p.event);
 		sendEvent({ kind: "status", state: ctx.isIdle() ? "idle" : "working" });
 	}
 
@@ -335,11 +372,147 @@ export default function (pi: ExtensionAPI): void {
 		backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
 	}
 
+	// ── dialog mirroring ─────────────────────────────────────────────────────
+	// ctx.ui resolves to one shared UI context object for all extensions, so
+	// wrapping select/confirm/input here also mirrors dialogs opened by other
+	// extensions (e.g. auto-permission's permission prompt).
+
+	function patchUi(ui: ExtensionContext["ui"]): void {
+		const u = ui as unknown as Record<PropertyKey, unknown>;
+		if (!u || u[UI_PATCHED]) return;
+		u[UI_PATCHED] = true;
+		for (const kind of ["select", "confirm", "input"] as const) {
+			const original = (u[kind] as (...a: unknown[]) => Promise<unknown>).bind(ui);
+			u[kind] = (...args: unknown[]) => mirrorDialog(kind, original, args);
+		}
+	}
+
+	async function mirrorDialog(
+		kind: DialogKind,
+		original: (...a: unknown[]) => Promise<unknown>,
+		args: unknown[],
+	): Promise<unknown> {
+		if (!enabled) return original(...args);
+
+		const title = typeof args[0] === "string" ? args[0] : "";
+		const options = kind === "select" && Array.isArray(args[1]) ? (args[1] as string[]) : undefined;
+		// second arg is the message (confirm) / placeholder (input); third is opts
+		const extra = kind !== "select" && typeof args[1] === "string" ? (args[1] as string) : undefined;
+		const callerOpts = (args[2] ?? {}) as { signal?: AbortSignal };
+
+		const promptId = `p${Date.now().toString(36)}-${++promptSeq}`;
+		const controller = new AbortController();
+		if (callerOpts.signal) {
+			if (callerOpts.signal.aborted) controller.abort();
+			else callerOpts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+		}
+
+		const promptEvent: RemoteEvent = {
+			kind: "prompt",
+			promptId,
+			promptType: kind,
+			title: trunc(title, MAX_PROMPT_TITLE),
+			detail: extra ? trunc(extra, MAX_ARG_STRING) : undefined,
+			options,
+			ts: Date.now(),
+		};
+
+		let remoteSettle!: (value: string | boolean | undefined) => void;
+		const remoteAnswer = new Promise<{ source: "remote"; value: unknown }>((resolve) => {
+			remoteSettle = (value) => resolve({ source: "remote", value });
+		});
+		openPrompts.set(promptId, { event: promptEvent, kind, options, settle: remoteSettle });
+		sendEvent(promptEvent);
+
+		const localArgs = [...args];
+		localArgs[2] = { ...callerOpts, signal: controller.signal };
+
+		try {
+			const winner = await Promise.race([
+				original(...localArgs).then((value) => ({ source: "local" as const, value })),
+				remoteAnswer,
+			]);
+			if (winner.source === "remote") {
+				controller.abort(); // dismiss the local dialog
+				try {
+					ctx?.ui.notify(`Answered remotely: ${String(winner.value)}`, "info");
+				} catch {
+					/* no UI */
+				}
+			}
+			sendEvent({
+				kind: "prompt_resolved",
+				promptId,
+				answer: winner.value === undefined ? null : winner.value,
+				source: winner.source,
+				ts: Date.now(),
+			});
+			return winner.value;
+		} finally {
+			openPrompts.delete(promptId);
+		}
+	}
+
+	function handleRespond(promptId: string, value: unknown): void {
+		const p = openPrompts.get(promptId);
+		if (!p) return;
+		if (value === null || value === undefined) {
+			// dismissed from the web UI
+			p.settle(p.kind === "confirm" ? false : undefined);
+			return;
+		}
+		if (p.kind === "select") {
+			if (typeof value === "string" && p.options?.includes(value)) p.settle(value);
+			else if (typeof value === "number" && p.options && typeof p.options[value] === "string") p.settle(p.options[value]);
+		} else if (p.kind === "confirm") {
+			if (typeof value === "boolean") p.settle(value);
+		} else if (typeof value === "string") {
+			p.settle(value);
+		}
+	}
+
+	function handleSetModel(provider: string, modelId: string): void {
+		const model = ctx?.modelRegistry.find(provider, modelId);
+		if (!model) {
+			sendEvent({ kind: "custom", text: `[remote] model not found: ${provider}/${modelId}`, ts: Date.now() });
+			return;
+		}
+		pi.setModel(model)
+			.then((ok) => {
+				if (ok) {
+					// model_select also fires, but make sure the picker reflects reality
+					wsSend({ type: "meta", meta: { model: model.id, modelProvider: model.provider } });
+				} else {
+					sendEvent({ kind: "custom", text: `[remote] cannot switch to ${model.id}: no API key`, ts: Date.now() });
+				}
+			})
+			.catch(() => {
+				sendEvent({ kind: "custom", text: `[remote] model switch to ${model.id} failed`, ts: Date.now() });
+			});
+	}
+
 	function handleServerMessage(raw: string): void {
-		let msg: { type?: string; text?: string };
+		let msg: {
+			type?: string;
+			text?: string;
+			promptId?: string;
+			value?: unknown;
+			provider?: string;
+			modelId?: string;
+		};
 		try {
 			msg = JSON.parse(raw);
 		} catch {
+			return;
+		}
+
+		if (msg.type === "respond" && typeof msg.promptId === "string") {
+			handleRespond(msg.promptId, msg.value);
+			return;
+		}
+
+		if (msg.type === "set_model" && typeof msg.provider === "string" && typeof msg.modelId === "string") {
+			handleSetModel(msg.provider, msg.modelId);
 			return;
 		}
 
@@ -379,6 +552,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, eventCtx) => {
 		ctx = eventCtx;
+		patchUi(eventCtx.ui);
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			// same process, new/resumed/forked session: re-register under new key
 			register();
@@ -400,6 +574,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, eventCtx) => {
 		ctx = eventCtx;
+		patchUi(eventCtx.ui); // ui context can be swapped after startup — re-check
 		sendEvent({ kind: "status", state: "working" });
 	});
 
@@ -485,7 +660,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("model_select", async (_event, eventCtx) => {
 		ctx = eventCtx;
-		wsSend({ type: "meta", meta: { model: eventCtx.model?.id } });
+		wsSend({ type: "meta", meta: { model: eventCtx.model?.id, modelProvider: eventCtx.model?.provider } });
 	});
 
 	// ── /rc command ──────────────────────────────────────────────────────────
