@@ -287,7 +287,12 @@ export default function (pi: ExtensionAPI): void {
 	/** Broadcast connection state on the extension event bus; the custom footer
 	 *  in auto-permission.ts renders it inline as "rc" on the model line. */
 	function updateStatusIndicator(): void {
-		pi.events.emit("rc:status", { connected });
+		try {
+			pi.events.emit("rc:status", { connected });
+		} catch {
+			// the pi ctx goes stale during shutdown/reload/session replacement and
+			// emit then throws; a ws close landing in that window must not crash pi
+		}
 	}
 
 	/** Session-usable models for the web UI's model picker. */
