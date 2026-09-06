@@ -263,6 +263,15 @@ export default function (pi: ExtensionAPI): void {
 	let partialTimer: ReturnType<typeof setTimeout> | undefined;
 	const remoteSentTexts: string[] = [];
 
+	// permission mode published by auto-permission.ts (see its "autoperm:mode")
+	let permMode: string | undefined;
+	pi.events.on("autoperm:mode", (data) => {
+		const next = (data as { mode?: string } | undefined)?.mode;
+		if (typeof next !== "string" || next === permMode) return;
+		permMode = next;
+		wsSend({ type: "meta", meta: { permMode } });
+	});
+
 	// ── dialog mirroring state ───────────────────────────────────────────────
 
 	type DialogKind = "select" | "confirm" | "input";
@@ -341,6 +350,7 @@ export default function (pi: ExtensionAPI): void {
 				model: ctx.model?.id,
 				modelProvider: ctx.model?.provider,
 				models: modelsMeta(ctx),
+				permMode,
 				startedAt: Date.now(),
 				pid: process.pid,
 			},
@@ -522,6 +532,7 @@ export default function (pi: ExtensionAPI): void {
 			value?: unknown;
 			provider?: string;
 			modelId?: string;
+			mode?: string;
 		};
 		try {
 			msg = JSON.parse(raw);
@@ -536,6 +547,16 @@ export default function (pi: ExtensionAPI): void {
 
 		if (msg.type === "set_model" && typeof msg.provider === "string" && typeof msg.modelId === "string") {
 			handleSetModel(msg.provider, msg.modelId);
+			return;
+		}
+
+		if (msg.type === "set_mode" && typeof msg.mode === "string") {
+			// auto-permission.ts owns the mode; it answers on "autoperm:mode"
+			try {
+				pi.events.emit("autoperm:set", { mode: msg.mode });
+			} catch {
+				/* stale ctx */
+			}
 			return;
 		}
 

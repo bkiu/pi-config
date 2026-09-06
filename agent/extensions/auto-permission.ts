@@ -537,6 +537,32 @@ export default function (pi: ExtensionAPI): void {
 		requestFooterRender?.();
 	});
 
+	// Permission mode is owned here but switchable from the pi-server web UI:
+	// publish it for remote-control.ts to mirror, and accept its set requests.
+	let lastCtx: ExtensionContext | undefined;
+
+	function publishMode(): void {
+		try {
+			pi.events.emit("autoperm:mode", { mode });
+		} catch {
+			// ctx goes stale during shutdown/reload; emit must never break the session
+		}
+	}
+
+	pi.events.on("autoperm:set", (data) => {
+		const next = (data as { mode?: string } | undefined)?.mode;
+		if (next !== "auto" && next !== "ask" && next !== "yolo") return;
+		if (!lastCtx || next === mode) {
+			publishMode(); // keep a redundant remote in sync anyway
+			return;
+		}
+		try {
+			setMode(next, lastCtx);
+		} catch {
+			/* stale ctx — ignore */
+		}
+	});
+
 	function formatTokens(count: number): string {
 		if (count < 1000) return count.toString();
 		if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -696,7 +722,9 @@ export default function (pi: ExtensionAPI): void {
 
 	function setMode(next: Mode, ctx: ExtensionContext): void {
 		mode = next;
+		lastCtx = ctx;
 		pi.appendEntry("auto-perm", { mode });
+		publishMode();
 		if (next === "auto") {
 			ctx.ui.notify("Auto permission mode enabled — mutating actions are LLM-reviewed (clear = run, caution = ask).", "info");
 		} else if (next === "yolo") {
@@ -805,6 +833,7 @@ export default function (pi: ExtensionAPI): void {
 	// ── Tool interception ──────────────────────────────────────────────────
 
 	pi.on("tool_call", async (event, ctx) => {
+		lastCtx = ctx;
 		const cwd = ctx.cwd ?? process.cwd();
 		const entries = ctx.sessionManager.getEntries();
 
@@ -912,6 +941,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionGrants.clear();
+		lastCtx = ctx;
 
 		if (pi.getFlag("yolo") === true) {
 			mode = "yolo";
@@ -925,5 +955,6 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		updateFooter(ctx);
+		publishMode();
 	});
 }
