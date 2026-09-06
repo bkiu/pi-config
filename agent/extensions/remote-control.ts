@@ -267,6 +267,60 @@ export default function (pi: ExtensionAPI): void {
 	const remoteSent: { id: string; text: string }[] = [];
 	let remoteSeq = 0;
 
+	// qa.ts's `ask` tool builds a bespoke TUI component (ctx.ui.custom), which
+	// the select/confirm/input wrappers below cannot see, so it publishes its
+	// question here instead. Same race: whoever answers first wins.
+	pi.events.on("rc:ask", (data) => {
+		const d = data as
+			| { id?: string; question?: string; options?: { label?: string; description?: string }[] }
+			| undefined;
+		if (!d || typeof d.id !== "string" || !d.id) return;
+		const options = (d.options ?? [])
+			.map((o) => (typeof o?.label === "string" ? o.label : ""))
+			.filter(Boolean);
+		const event: RemoteEvent = {
+			kind: "prompt",
+			promptId: d.id,
+			promptType: "ask", // options plus a free-text answer
+			title: trunc(String(d.question ?? "Question"), MAX_PROMPT_TITLE),
+			options,
+			descriptions: (d.options ?? []).map((o) => (typeof o?.description === "string" ? o.description : "")),
+			ts: Date.now(),
+		};
+		openPrompts.set(d.id, {
+			event,
+			kind: "ask",
+			options,
+			settle: (value) => {
+				// no mirrorDialog wrapper here, so close the card ourselves
+				openPrompts.delete(d.id!);
+				sendEvent({
+					kind: "prompt_resolved",
+					promptId: d.id,
+					answer: value ?? null,
+					source: "remote",
+					ts: Date.now(),
+				});
+				pi.events.emit("rc:ask:answer", { id: d.id, answer: value ?? null });
+			},
+		});
+		sendEvent(event);
+	});
+
+	// answered in the terminal (or cancelled) — close the card in the browser
+	pi.events.on("rc:ask:close", (data) => {
+		const d = data as { id?: string; answer?: unknown } | undefined;
+		if (!d || typeof d.id !== "string" || !openPrompts.has(d.id)) return;
+		openPrompts.delete(d.id);
+		sendEvent({
+			kind: "prompt_resolved",
+			promptId: d.id,
+			answer: d.answer ?? null,
+			source: "local",
+			ts: Date.now(),
+		});
+	});
+
 	// permission mode published by auto-permission.ts (see its "autoperm:mode")
 	let permMode: string | undefined;
 	pi.events.on("autoperm:mode", (data) => {
@@ -278,7 +332,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── dialog mirroring state ───────────────────────────────────────────────
 
-	type DialogKind = "select" | "confirm" | "input";
+	type DialogKind = "select" | "confirm" | "input" | "ask";
 	interface OpenPrompt {
 		event: RemoteEvent; // re-sent on reconnect so a fresh UI sees open prompts
 		kind: DialogKind;
@@ -548,7 +602,10 @@ export default function (pi: ExtensionAPI): void {
 			p.settle(p.kind === "confirm" ? false : undefined);
 			return;
 		}
-		if (p.kind === "select") {
+		if (p.kind === "ask") {
+			// the ask tool accepts a listed option or a typed answer
+			if (typeof value === "string" && value.trim()) p.settle(value.trim());
+		} else if (p.kind === "select") {
 			if (typeof value === "string" && p.options?.includes(value)) p.settle(value);
 			else if (typeof value === "number" && p.options && typeof p.options[value] === "string") p.settle(p.options[value]);
 		} else if (p.kind === "confirm") {

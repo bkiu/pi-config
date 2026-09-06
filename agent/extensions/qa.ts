@@ -243,8 +243,47 @@ export default function qa(pi: ExtensionAPI) {
 			const options: OptionWithDesc[] = params.options ?? [];
 			const allOptions: DisplayOption[] = [...options, { label: "Type something.", isOther: true }];
 
+			// Mirror the question to the pi-server dashboard (remote-control.ts
+			// listens on "rc:ask"), so it can be answered from the web too.
+			// ctx.ui.custom has no abort signal, so the remote answer completes
+			// the local component through its own `done` callback.
+			const askId = `ask${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`;
+			let finish: ((r: { answer: string; wasCustom: boolean; index?: number } | null) => void) | undefined;
+			let settled = false;
+			const unsubscribe = pi.events.on("rc:ask:answer", (data) => {
+				const d = data as { id?: string; answer?: unknown } | undefined;
+				if (!d || d.id !== askId || settled || !finish) return;
+				if (d.answer === null || d.answer === undefined) {
+					finish(null);
+					return;
+				}
+				const answer = String(d.answer);
+				const idx = options.findIndex((o) => o.label === answer);
+				finish(idx >= 0 ? { answer, wasCustom: false, index: idx + 1 } : { answer, wasCustom: true });
+			});
+
 			const result = await ctx.ui.custom<{ answer: string; wasCustom: boolean; index?: number } | null>(
-				(tui, theme, _kb, done) => {
+				(tui, theme, _kb, rawDone) => {
+					const done = (r: { answer: string; wasCustom: boolean; index?: number } | null) => {
+						if (settled) return;
+						settled = true;
+						try {
+							pi.events.emit("rc:ask:close", { id: askId, answer: r ? r.answer : null });
+						} catch {
+							/* no listener / stale ctx */
+						}
+						rawDone(r);
+					};
+					finish = done;
+					try {
+						pi.events.emit("rc:ask", {
+							id: askId,
+							question: params.question,
+							options: options.map((o) => ({ label: o.label, description: o.description })),
+						});
+					} catch {
+						/* remote-control not loaded */
+					}
 					let optionIndex = 0;
 					let editMode = false;
 					let cachedLines: string[] | undefined;
@@ -370,6 +409,7 @@ export default function qa(pi: ExtensionAPI) {
 				},
 			);
 
+			unsubscribe();
 			return buildAskResult(params.question, options, result);
 		},
 
