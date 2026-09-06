@@ -13,7 +13,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 
 /* ── shared types ────────────────────────────────────────────────────────── */
 
@@ -157,7 +157,11 @@ const AskMultiParams = Type.Object({
 	}),
 });
 
-function renderMultiCall(args: { questions: MultiQuestion[] }, theme: any) {
+/** The raw shape the LLM sends — `label`, `options` and `allowOther` are still
+ *  optional here; `MultiQuestion` is the normalized form used after execute(). */
+type AskMultiArgs = Static<typeof AskMultiParams>;
+
+function renderMultiCall(args: AskMultiArgs, theme: any) {
 	const qs = args.questions || [];
 	const count = qs.length;
 	const labels = qs.map((q) => q.label || q.id).join(", ");
@@ -443,6 +447,7 @@ export default function qa(pi: ExtensionAPI) {
 			const questions: MultiQuestion[] = params.questions.map((q, i) => ({
 				...q,
 				label: q.label || `Q${i + 1}`,
+				options: q.options ?? [],
 				allowOther: q.allowOther !== false,
 			}));
 
@@ -742,11 +747,9 @@ export default function qa(pi: ExtensionAPI) {
 				};
 			}
 
-			const result = await ctx.ui.input(params.prompt, {
-				placeholder: "Type your answer…",
-			});
+			const result = await ctx.ui.input(params.prompt, "Type your answer…");
 
-			if (result === null) {
+			if (result == null) {
 				return {
 					content: [{ type: "text", text: "User cancelled" }],
 					details: { prompt: params.prompt, answer: null, cancelled: true },
