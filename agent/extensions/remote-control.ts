@@ -261,7 +261,11 @@ export default function (pi: ExtensionAPI): void {
 
 	let pendingPartial: RemoteEvent | undefined;
 	let partialTimer: ReturnType<typeof setTimeout> | undefined;
-	const remoteSentTexts: string[] = [];
+	/** Messages sent from the web UI, already echoed to it, awaiting delivery
+	 *  into the session (a steered message is only consumed when the current
+	 *  turn takes its next step — that can be minutes on a long tool call). */
+	const remoteSent: { id: string; text: string }[] = [];
+	let remoteSeq = 0;
 
 	// permission mode published by auto-permission.ts (see its "autoperm:mode")
 	let permMode: string | undefined;
@@ -486,6 +490,56 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
+	/**
+	 * Deliver a message from the web UI into the session.
+	 *
+	 * pi's prompt() throws "Agent is already processing" if a message arrives
+	 * while the agent is streaming without a delivery mode, and sendUserMessage
+	 * is fire-and-forget (void return, async body), so that rejection cannot be
+	 * caught by the caller — the message just vanishes. Passing deliverAs is
+	 * ignored when the agent is idle, so always pass it: that removes the race
+	 * between checking idleness and sending, which is exactly the window a
+	 * thinking agent sits in.
+	 */
+	function deliverRemoteInput(text: string): void {
+		const id = `r${Date.now().toString(36)}-${++remoteSeq}`;
+		remoteSent.push({ id, text });
+		if (remoteSent.length > 10) remoteSent.shift();
+
+		let busy = false;
+		try {
+			busy = ctx ? !ctx.isIdle() : false;
+		} catch {
+			// stale ctx — assume busy; "steer" is delivered either way
+			busy = true;
+		}
+
+		// Echo straight back so the sender sees the message land immediately.
+		// Without this it stays invisible until the agent consumes it, which
+		// looks exactly like the message having been dropped.
+		sendEvent({ kind: "user", text: trunc(text, MAX_TEXT), via: "remote", msgId: id, queued: busy, ts: Date.now() });
+
+		const fail = (why: string) => {
+			const idx = remoteSent.findIndex((r) => r.id === id);
+			if (idx >= 0) remoteSent.splice(idx, 1);
+			sendEvent({ kind: "custom", text: `[remote] message not delivered: ${why}`, ts: Date.now() });
+		};
+
+		// "steer" reaches the agent at the next step of the current turn;
+		// "followUp" would wait for the whole turn to finish.
+		try {
+			const result = pi.sendUserMessage(text, { deliverAs: "steer" }) as unknown;
+			// typed void, but reject asynchronously in practice — catch either way
+			if (result && typeof (result as Promise<unknown>).catch === "function") {
+				(result as Promise<unknown>).catch((err: unknown) => {
+					fail(err instanceof Error ? err.message : String(err));
+				});
+			}
+		} catch (err) {
+			fail(err instanceof Error ? err.message : String(err));
+		}
+	}
+
 	function handleRespond(promptId: string, value: unknown): void {
 		const p = openPrompts.get(promptId);
 		if (!p) return;
@@ -561,18 +615,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		if (msg.type === "input" && typeof msg.text === "string" && msg.text.trim()) {
-			const text = msg.text.trim();
-			remoteSentTexts.push(text);
-			if (remoteSentTexts.length > 10) remoteSentTexts.shift();
-			try {
-				if (ctx && !ctx.isIdle()) {
-					pi.sendUserMessage(text, { deliverAs: "steer" });
-				} else {
-					pi.sendUserMessage(text);
-				}
-			} catch {
-				/* agent state changed between check and send */
-			}
+			deliverRemoteInput(msg.text.trim());
 			return;
 		}
 
@@ -639,14 +682,15 @@ export default function (pi: ExtensionAPI): void {
 
 		if (message.role === "user") {
 			const text = textOf(message.content);
-			const remoteIdx = remoteSentTexts.indexOf(text);
-			if (remoteIdx >= 0) remoteSentTexts.splice(remoteIdx, 1);
-			sendEvent({
-				kind: "user",
-				text: trunc(text, MAX_TEXT),
-				via: remoteIdx >= 0 ? "remote" : undefined,
-				ts: message.timestamp ?? Date.now(),
-			});
+			const remoteIdx = remoteSent.findIndex((r) => r.text === text);
+			if (remoteIdx >= 0) {
+				// already echoed when it was accepted — just clear the "queued"
+				// marker now that the agent has actually taken it
+				const [entry] = remoteSent.splice(remoteIdx, 1);
+				sendEvent({ kind: "user_delivered", msgId: entry.id, ts: message.timestamp ?? Date.now() });
+			} else {
+				sendEvent({ kind: "user", text: trunc(text, MAX_TEXT), ts: message.timestamp ?? Date.now() });
+			}
 		} else if (message.role === "assistant") {
 			if (partialTimer) {
 				clearTimeout(partialTimer);
