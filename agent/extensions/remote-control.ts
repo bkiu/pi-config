@@ -53,14 +53,21 @@ function fileConfig(): { url?: string; name?: string; tokenFile?: string } {
 function connectionToken(): string | undefined {
 	const env = process.env.PI_REMOTE_TOKEN?.trim();
 	if (env) return env;
-	const file =
-		(typeof CONFIG.tokenFile === "string" && CONFIG.tokenFile.trim().replace(/^~(?=\/)/, homedir())) ||
-		join(homedir(), ".config", "pi-remote", "token");
-	try {
-		return readFileSync(file, "utf8").trim() || undefined;
-	} catch {
-		return undefined; // server may not require one (dev mode)
+	// The configured path first (an agenix secret under /run/agenix on NixOS),
+	// then the plain default — so a machine without that secret provisioned
+	// still authenticates instead of silently connecting without a token.
+	const configured =
+		typeof CONFIG.tokenFile === "string" ? CONFIG.tokenFile.trim().replace(/^~(?=\/)/, homedir()) : "";
+	const files = [configured, join(homedir(), ".config", "pi-remote", "token")].filter(Boolean);
+	for (const file of files) {
+		try {
+			const token = readFileSync(file, "utf8").trim();
+			if (token) return token;
+		} catch {
+			// unreadable or absent — try the next candidate
+		}
 	}
+	return undefined; // server may not require one (dev mode)
 }
 
 const CONFIG = fileConfig();

@@ -1,3 +1,4 @@
 {
-	"url": "wss://pi.stargazer-darter.ts.net"
+	"url": "wss://pi.stargazer-darter.ts.net",
+	"tokenFile": "/run/agenix/pi-remote-token"
 }
