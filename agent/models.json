@@ -6,8 +6,8 @@
       "apiKey": "no-key-needed",
       "models": [
         {
-          "id": "qwen3.8-27b",
-          "name": "qwen3.8-27b",
+          "id": "ukisai/Swift-Qwen3.8-27B",
+          "name": "ukisai/Swift-Qwen3.8-27B",
           "contextWindow": 262144,
           "maxTokens": 32768
         }

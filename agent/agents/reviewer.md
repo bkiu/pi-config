@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review specialist for quality and security analysis
 tools: read, grep, find, ls, bash
-model: leftoverburrito/qwen3.8-27b
+model: leftoverburrito/ukisai/Swift-Qwen3.8-27B
 ---
 
 You are a senior code reviewer. Analyze code for quality, security, and maintainability.
