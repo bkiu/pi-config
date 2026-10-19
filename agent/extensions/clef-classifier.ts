@@ -30,7 +30,15 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { classify } from "@earendil-works/pi-ai/api/typesafe-system-one";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+
+// pi's extension loader compiles extensions to CJS, but pi-ai's exports map
+// only defines the "import" condition for ./api/* subpaths, so
+// `@earendil-works/pi-ai/api/typesafe-system-one` cannot be required.
+// The built-in `typesafe` provider (reachable via the aliased
+// `providers/all` entrypoint) carries the very same typesafe-system-one
+// `classify` implementation, so reuse it from there.
+const classify = builtinProviders().find((p) => p.id === "typesafe")?.classify;
 
 export const CLEF_PROVIDER = "chorizoburrito";
 export const CLEF_MODEL_ID = "clef-flash";
@@ -53,8 +61,6 @@ export default function (pi: ExtensionAPI): void {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			},
 		],
-		classifiers: {
-			"typesafe-system-one": { classify },
-		},
+		classifiers: classify ? { "typesafe-system-one": { classify } } : undefined,
 	});
 }
