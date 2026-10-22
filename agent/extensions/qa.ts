@@ -13,7 +13,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 
 /* ── shared types ────────────────────────────────────────────────────────── */
 
@@ -157,7 +157,11 @@ const AskMultiParams = Type.Object({
 	}),
 });
 
-function renderMultiCall(args: { questions: MultiQuestion[] }, theme: any) {
+/** The raw shape the LLM sends — `label`, `options` and `allowOther` are still
+ *  optional here; `MultiQuestion` is the normalized form used after execute(). */
+type AskMultiArgs = Static<typeof AskMultiParams>;
+
+function renderMultiCall(args: AskMultiArgs, theme: any) {
 	const qs = args.questions || [];
 	const count = qs.length;
 	const labels = qs.map((q) => q.label || q.id).join(", ");
@@ -243,8 +247,47 @@ export default function qa(pi: ExtensionAPI) {
 			const options: OptionWithDesc[] = params.options ?? [];
 			const allOptions: DisplayOption[] = [...options, { label: "Type something.", isOther: true }];
 
+			// Mirror the question to the pi-server dashboard (remote-control.ts
+			// listens on "rc:ask"), so it can be answered from the web too.
+			// ctx.ui.custom has no abort signal, so the remote answer completes
+			// the local component through its own `done` callback.
+			const askId = `ask${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`;
+			let finish: ((r: { answer: string; wasCustom: boolean; index?: number } | null) => void) | undefined;
+			let settled = false;
+			const unsubscribe = pi.events.on("rc:ask:answer", (data) => {
+				const d = data as { id?: string; answer?: unknown } | undefined;
+				if (!d || d.id !== askId || settled || !finish) return;
+				if (d.answer === null || d.answer === undefined) {
+					finish(null);
+					return;
+				}
+				const answer = String(d.answer);
+				const idx = options.findIndex((o) => o.label === answer);
+				finish(idx >= 0 ? { answer, wasCustom: false, index: idx + 1 } : { answer, wasCustom: true });
+			});
+
 			const result = await ctx.ui.custom<{ answer: string; wasCustom: boolean; index?: number } | null>(
-				(tui, theme, _kb, done) => {
+				(tui, theme, _kb, rawDone) => {
+					const done = (r: { answer: string; wasCustom: boolean; index?: number } | null) => {
+						if (settled) return;
+						settled = true;
+						try {
+							pi.events.emit("rc:ask:close", { id: askId, answer: r ? r.answer : null });
+						} catch {
+							/* no listener / stale ctx */
+						}
+						rawDone(r);
+					};
+					finish = done;
+					try {
+						pi.events.emit("rc:ask", {
+							id: askId,
+							question: params.question,
+							options: options.map((o) => ({ label: o.label, description: o.description })),
+						});
+					} catch {
+						/* remote-control not loaded */
+					}
 					let optionIndex = 0;
 					let editMode = false;
 					let cachedLines: string[] | undefined;
@@ -370,6 +413,7 @@ export default function qa(pi: ExtensionAPI) {
 				},
 			);
 
+			unsubscribe();
 			return buildAskResult(params.question, options, result);
 		},
 
@@ -403,6 +447,7 @@ export default function qa(pi: ExtensionAPI) {
 			const questions: MultiQuestion[] = params.questions.map((q, i) => ({
 				...q,
 				label: q.label || `Q${i + 1}`,
+				options: q.options ?? [],
 				allowOther: q.allowOther !== false,
 			}));
 
@@ -702,11 +747,9 @@ export default function qa(pi: ExtensionAPI) {
 				};
 			}
 
-			const result = await ctx.ui.input(params.prompt, {
-				placeholder: "Type your answer…",
-			});
+			const result = await ctx.ui.input(params.prompt, "Type your answer…");
 
-			if (result === null) {
+			if (result == null) {
 				return {
 					content: [{ type: "text", text: "User cancelled" }],
 					details: { prompt: params.prompt, answer: null, cancelled: true },

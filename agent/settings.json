@@ -1,6 +1,6 @@
 {
   "lastChangelogVersion": "0.80.3",
   "defaultProvider": "leftoverburrito",
-  "defaultModel": "qwen3.6-27b",
+  "defaultModel": "ukisai/Swift-Qwen3.8-27B",
   "theme": "dark"
 }

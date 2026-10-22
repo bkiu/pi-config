@@ -6,21 +6,21 @@
       "apiKey": "no-key-needed",
       "models": [
         {
-          "id": "qwen3.6-27b",
-          "name": "qwen3.6-27b",
+          "id": "ukisai/Swift-Qwen3.8-27B",
+          "name": "ukisai/Swift-Qwen3.8-27B",
           "contextWindow": 262144,
           "maxTokens": 32768
         }
       ]
     },
     "windtunnel": {
-      "baseUrl": "http://brendankiudesktop.stargazer-darter.ts.net:8080/v1",
+      "baseUrl": "http://windtunnel.stargazer-darter.ts.net:8080/v1",
       "api": "openai-completions",
       "apiKey": "no-key-needed",
       "models": [
         {
-          "id": "qwen3.6-27b-autoround",
-          "name": "qwen3.6-27b",
+          "id": "qwen3.8-27b",
+          "name": "qwen3.8-27b",
           "contextWindow": 262144,
           "maxTokens": 32768
         }
